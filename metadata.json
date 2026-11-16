@@ -1,0 +1,8 @@
+{
+  "name": "Meridian Signal Desk",
+  "description": "Cross-asset daily swing trading signal engine, transparent rule-based scoring, risk sizing, walk-forward backtester, and AI catalyst synthesis across stocks, commodities, and crypto.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}

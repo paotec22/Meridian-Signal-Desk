@@ -1,0 +1,70 @@
+# Meridian Signal Desk Configuration (Rule-Based V1 Engine)
+
+universe:
+  stocks_benchmark: "^GSPC"
+  crypto_benchmark: "BTC-USD"
+  commodities_benchmark: "DX-Y.NYB"
+  excluded_crypto_tokens:
+    - USDT
+    - USDC
+    - DAI
+    - BUSD
+    - TUSD
+    - FDUSD
+    - USDE
+    - PYUSD
+    - WBTC
+    - WETH
+    - STETH
+    - CBETH
+
+filters:
+  min_history_days: 210
+  min_stock_dollar_volume_20d: 5000000
+  min_crypto_dollar_volume_20d: 2000000
+  min_commodity_dollar_volume_20d: 500000
+  candidate_threshold: 70
+  avoid_threshold: 60
+  max_picks_total: 10
+  max_picks_per_class: 5
+
+regime:
+  bearish_long_multiplier: 0.80
+  bearish_max_long_picks: 3
+
+scoring_weights:
+  above_sma50: 15
+  above_sma200: 15
+  sma50_above_sma200: 10
+  rsi_momentum_band: 15
+  adx_trend_strength: 15
+  macd_cross: 10
+  volume_confirmation: 10
+  relative_strength: 10
+
+scoring_thresholds:
+  long_rsi_min: 50
+  long_rsi_max: 70
+  short_rsi_min: 30
+  short_rsi_max: 50
+  adx_min: 20
+  vol_ratio_min: 1.0
+
+risk:
+  entry_atr_band: 0.5
+  stop_atr_multiplier: 2.0
+  min_risk_reward: 1.5
+  target_r_multiple: 2.0
+  default_account_equity: 25000
+  default_risk_pct: 1.0
+  max_position_pct: 15.0
+  correlation_window_days: 60
+  max_pair_correlation: 0.80
+  time_stop_days: 15
+
+backtest:
+  stock_cost_bps: 5
+  commodity_cost_bps: 6
+  crypto_cost_bps: 15
+  walk_forward_train_days: 252
+  walk_forward_test_days: 126
