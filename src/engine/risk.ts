@@ -1,5 +1,5 @@
-import { getDb } from './db.ts';
-import type { AppConfig, PriceBar, SignalRecord } from './types.ts';
+import { getBarsForAsset } from './db.ts';
+import type { AppConfig, PriceBar, SignalRecord, Timeframe } from './types.ts';
 
 export interface RiskLevels {
   entryLow: number;
@@ -31,7 +31,7 @@ export function computeRiskLevels(
   const band = cfg.risk.entry_atr_band * safeAtr;
   const stopDist = cfg.risk.stop_atr_multiplier * safeAtr;
 
-  // Recent 40-day swing high/low reference for resistance/support
+  // Recent 40-bar swing high/low reference for resistance/support
   const slice = recentBarsDesc.slice(1, 41);
   let swingHigh = close * 1.1;
   let swingLow = close * 0.9;
@@ -109,13 +109,14 @@ export function pearsonCorrelation(a: number[], b: number[]): number {
   return denom === 0 ? 0 : num / denom;
 }
 
-export function getReturnSeriesMap(assetIds: number[], windowDays = 60): Map<number, number[]> {
-  const db = getDb();
+export function getReturnSeriesMap(
+  assetIds: number[],
+  windowBars = 60,
+  timeframe: Timeframe = '1d'
+): Map<number, number[]> {
   const map = new Map<number, number[]>();
   for (const id of assetIds) {
-    const rows = db
-      .prepare('SELECT adj_close FROM prices_daily WHERE asset_id = ? ORDER BY date DESC LIMIT ?')
-      .all(id, windowDays + 1) as Array<{ adj_close: number }>;
+    const rows = getBarsForAsset(id, timeframe, 'DESC', windowBars + 1);
     if (rows.length < 15) continue;
     const asc = rows.reverse();
     const rets: number[] = [];
@@ -129,12 +130,14 @@ export function getReturnSeriesMap(assetIds: number[], windowDays = 60): Map<num
 
 export function filterByCorrelation(
   sortedCandidates: SignalRecord[],
-  windowDays = 60,
-  maxCorr = 0.8
+  windowBars = 60,
+  maxCorr = 0.8,
+  timeframe: Timeframe = '1d'
 ): SignalRecord[] {
   const returnsMap = getReturnSeriesMap(
     sortedCandidates.map((c) => c.asset_id),
-    windowDays
+    windowBars,
+    timeframe
   );
   const kept: SignalRecord[] = [];
   for (const cand of sortedCandidates) {
@@ -158,12 +161,14 @@ export function filterByCorrelation(
 
 export function computeCorrelationMatrix(
   signals: Array<{ asset_id: number; symbol: string }>,
-  windowDays = 60
+  windowBars = 60,
+  timeframe: Timeframe = '1d'
 ): { symbols: string[]; matrix: number[][] } {
   const top = signals.slice(0, 8);
   const returnsMap = getReturnSeriesMap(
     top.map((s) => s.asset_id),
-    windowDays
+    windowBars,
+    timeframe
   );
   const symbols = top.map((s) => s.symbol);
   const matrix: number[][] = top.map((rowAsset, i) =>
@@ -177,3 +182,5 @@ export function computeCorrelationMatrix(
   );
   return { symbols, matrix };
 }
+
+export { computeCryptoFuturesMetrics, type CryptoFuturesSizing } from './futuresMath.ts';

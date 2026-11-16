@@ -1,5 +1,39 @@
 export type AssetClass = 'stock' | 'commodity' | 'crypto' | 'benchmark';
+export type Timeframe = '1h' | '4h' | '1d' | '1wk';
 export type SignalDirection = 'long' | 'short' | 'avoid';
+export type CryptoTradingMode = 'spot' | 'futures';
+export type MarginMode = 'isolated' | 'cross';
+
+export interface CryptoFuturesContractMeta {
+  perpSymbol: string;
+  markPrice: number;
+  indexPrice: number;
+  basisPct: number;
+  fundingRate: number;
+  fundingRatePct: number;
+  annualizedFundingPct: number;
+  nextFundingTime: string | null;
+  openInterestUnits: number | null;
+  openInterestUsd: number | null;
+  fetchedAt: string;
+}
+
+export interface FreshnessSummary {
+  timeframe: Timeframe;
+  status: 'Current' | 'Aging' | 'Stale';
+  statusReason: string;
+  lastFetchedAt: string | null;
+  latestBarOverall: string | null;
+  byClass: Record<
+    string,
+    {
+      assetsCount: number;
+      latestBarTime: string | null;
+      latestMarketTime: string | null;
+      lastFetchedAt: string | null;
+    }
+  >;
+}
 
 export interface RegimeStatus {
   sp500Close: number;
@@ -34,6 +68,7 @@ export interface SignalRecord {
   position_pct: number;
   reasons: string[];
   regime: string;
+  cryptoFutures?: CryptoFuturesContractMeta | null;
 }
 
 export interface PipelineRunRow {
@@ -102,13 +137,26 @@ export interface AppConfig {
     stock_cost_bps: number;
     commodity_cost_bps: number;
     crypto_cost_bps: number;
+    crypto_futures_cost_bps?: number;
     walk_forward_train_days: number;
     walk_forward_test_days: number;
+  };
+  crypto_futures?: {
+    enabled_by_default: boolean;
+    default_leverage: number;
+    max_leverage: number;
+    margin_mode: MarginMode;
+    taker_fee_bps: number;
+    maintenance_margin_rate: number;
   };
 }
 
 export interface DashboardResponse {
   bootstrapping: boolean;
+  timeframe: Timeframe;
+  cryptoMode?: CryptoTradingMode;
+  serverTime?: string;
+  freshness?: FreshnessSummary;
   pipelineRunning: boolean;
   lastRun: PipelineRunRow | null;
   asOfDate: string | null;
@@ -170,6 +218,7 @@ export interface ScannerRow {
   rel_strength: number | null;
   pct_from_52w_high: number | null;
   dollar_vol_20: number | null;
+  cryptoFutures?: CryptoFuturesContractMeta | null;
 }
 
 export interface SignalOutcomeRow {
@@ -269,6 +318,8 @@ export interface SignalResearchBrief {
   bearRisks: string[];
   macroAlignment: string;
   riskVerdict: 'Aligned' | 'Elevated Event Risk' | 'Counter-Trend Caution';
-  sources: Array<{ title: string; uri: string }>;
+  sources: Array<{ title: string; uri: string; publishedAt?: string }>;
+  checkedAt?: string;
+  timeframe?: Timeframe;
   notice?: string;
 }

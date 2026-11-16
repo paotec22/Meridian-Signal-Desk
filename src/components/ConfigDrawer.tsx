@@ -1,17 +1,26 @@
 import { Plus, X } from 'lucide-react';
 import { useState } from 'react';
-import type { AppConfig, AssetClass } from '../types';
+import type { AppConfig, AssetClass, Timeframe } from '../types';
 
 interface Props {
   config: AppConfig;
+  timeframe: Timeframe;
   onClose: () => void;
   onConfigSaved: () => void;
 }
 
-export function ConfigDrawer({ config, onClose, onConfigSaved }: Props) {
+export function ConfigDrawer({ config, timeframe, onClose, onConfigSaved }: Props) {
   const [weights, setWeights] = useState({ ...config.scoring_weights });
   const [risk, setRisk] = useState({ ...config.risk });
   const [bearishMult, setBearishMult] = useState(config.regime.bearish_long_multiplier);
+  const [cryptoFutures, setCryptoFutures] = useState({
+    enabled_by_default: config.crypto_futures?.enabled_by_default ?? false,
+    default_leverage: config.crypto_futures?.default_leverage ?? 3,
+    max_leverage: config.crypto_futures?.max_leverage ?? 20,
+    margin_mode: config.crypto_futures?.margin_mode ?? ('isolated' as const),
+    taker_fee_bps: config.crypto_futures?.taker_fee_bps ?? 5,
+    maintenance_margin_rate: config.crypto_futures?.maintenance_margin_rate ?? 0.005,
+  });
   const [saving, setSaving] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
 
@@ -33,9 +42,11 @@ export function ConfigDrawer({ config, onClose, onConfigSaved }: Props) {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
+          timeframe,
           scoring_weights: weights,
           risk,
           regime: { ...config.regime, bearish_long_multiplier: bearishMult },
+          crypto_futures: cryptoFutures,
         }),
       });
       const data = await res.json();
@@ -62,11 +73,12 @@ export function ConfigDrawer({ config, onClose, onConfigSaved }: Props) {
           symbol: newSymbol.trim(),
           name: newName.trim() || newSymbol.trim().toUpperCase(),
           asset_class: newClass,
+          timeframe,
         }),
       });
       const data = await res.json();
       if (!res.ok || data.error) throw new Error(data.error || 'Failed to ingest symbol');
-      setAssetMsg(`Ingested ${data.barsInserted} daily bars for ${data.asset.symbol}.`);
+      setAssetMsg(`Ingested ${data.barsInserted} ${timeframe.toUpperCase()} bars for ${data.asset.symbol}.`);
       setNewSymbol('');
       setNewName('');
       onConfigSaved();
@@ -220,6 +232,75 @@ export function ConfigDrawer({ config, onClose, onConfigSaved }: Props) {
                     max={1.0}
                     value={bearishMult}
                     onChange={(e) => setBearishMult(Number(e.target.value))}
+                    className="w-full px-3 py-1.5 rounded-md border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 font-mono tabular-nums"
+                  />
+                </label>
+              </div>
+            </div>
+
+            <div className="pt-4 border-t border-slate-200 dark:border-slate-800 space-y-3">
+              <h3 className="text-sm font-semibold text-slate-900 dark:text-slate-100">
+                Crypto Perpetual Futures Defaults
+              </h3>
+              <div className="grid grid-cols-2 gap-3 text-xs">
+                <label className="block space-y-1">
+                  <span className="text-slate-600 dark:text-slate-400 block">Default Crypto Mode</span>
+                  <select
+                    value={cryptoFutures.enabled_by_default ? 'futures' : 'spot'}
+                    onChange={(e) =>
+                      setCryptoFutures({ ...cryptoFutures, enabled_by_default: e.target.value === 'futures' })
+                    }
+                    className="w-full px-3 py-1.5 rounded-md border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950"
+                  >
+                    <option value="spot">Spot (1×)</option>
+                    <option value="futures">Perpetual Futures</option>
+                  </select>
+                </label>
+                <label className="block space-y-1">
+                  <span className="text-slate-600 dark:text-slate-400 block">Default Margin Mode</span>
+                  <select
+                    value={cryptoFutures.margin_mode}
+                    onChange={(e) =>
+                      setCryptoFutures({
+                        ...cryptoFutures,
+                        margin_mode: e.target.value === 'cross' ? 'cross' : 'isolated',
+                      })
+                    }
+                    className="w-full px-3 py-1.5 rounded-md border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950"
+                  >
+                    <option value="isolated">Isolated</option>
+                    <option value="cross">Cross</option>
+                  </select>
+                </label>
+                <label className="block space-y-1">
+                  <span className="text-slate-600 dark:text-slate-400 block">Default Leverage (×)</span>
+                  <input
+                    type="number"
+                    min={1}
+                    max={cryptoFutures.max_leverage}
+                    value={cryptoFutures.default_leverage}
+                    onChange={(e) =>
+                      setCryptoFutures({
+                        ...cryptoFutures,
+                        default_leverage: Math.max(1, Math.min(20, Number(e.target.value) || 1)),
+                      })
+                    }
+                    className="w-full px-3 py-1.5 rounded-md border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 font-mono tabular-nums"
+                  />
+                </label>
+                <label className="block space-y-1">
+                  <span className="text-slate-600 dark:text-slate-400 block">Perp Taker Fee (bps)</span>
+                  <input
+                    type="number"
+                    min={1}
+                    max={30}
+                    value={cryptoFutures.taker_fee_bps}
+                    onChange={(e) =>
+                      setCryptoFutures({
+                        ...cryptoFutures,
+                        taker_fee_bps: Math.max(1, Number(e.target.value) || 5),
+                      })
+                    }
                     className="w-full px-3 py-1.5 rounded-md border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 font-mono tabular-nums"
                   />
                 </label>

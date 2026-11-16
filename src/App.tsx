@@ -1,18 +1,31 @@
-import { FileText, Loader2, Moon, RefreshCw, SlidersHorizontal, Sun } from 'lucide-react';
+import { CheckCircle2, Clock, FileText, Loader2, Moon, RefreshCw, SlidersHorizontal, Sun } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { BacktestView } from './components/BacktestView';
 import { ConfigDrawer } from './components/ConfigDrawer';
 import { DigestModal } from './components/DigestModal';
+import { FreshnessModal } from './components/FreshnessModal';
 import { ScannerView } from './components/ScannerView';
 import { SignalDetailPanel } from './components/SignalDetailPanel';
 import { TrackRecordView } from './components/TrackRecordView';
-import type { DashboardResponse, SignalRecord } from './types';
+import type { CryptoTradingMode, DashboardResponse, MarginMode, SignalRecord, Timeframe } from './types';
 
 type NavTab = 'signals' | 'scanner' | 'backtest' | 'track-record';
 
+const TIMEFRAME_OPTIONS: Array<{ value: Timeframe; label: string }> = [
+  { value: '1h', label: '1H' },
+  { value: '4h', label: '4H' },
+  { value: '1d', label: '1D' },
+  { value: '1wk', label: '1W' },
+];
+
 export default function App() {
   const [activeTab, setActiveTab] = useState<NavTab>('signals');
+  const [timeframe, setTimeframe] = useState<Timeframe>('1d');
   const [darkMode, setDarkMode] = useState(false);
+  const [cryptoMode, setCryptoMode] = useState<CryptoTradingMode>('spot');
+  const [cryptoLeverage, setCryptoLeverage] = useState<number>(3);
+  const [marginMode, setMarginMode] = useState<MarginMode>('isolated');
+  const [initializedCryptoCfg, setInitializedCryptoCfg] = useState(false);
 
   const [dashboard, setDashboard] = useState<DashboardResponse | null>(null);
   const [loading, setLoading] = useState(true);
@@ -28,6 +41,7 @@ export default function App() {
 
   const [showConfig, setShowConfig] = useState(false);
   const [showDigest, setShowDigest] = useState(false);
+  const [showFreshness, setShowFreshness] = useState(false);
 
   useEffect(() => {
     document.documentElement.classList.toggle('dark', darkMode);
@@ -35,29 +49,41 @@ export default function App() {
 
   const fetchDashboard = useCallback(async () => {
     try {
-      const res = await fetch(`/api/dashboard?equity=${equity}&riskPct=${riskPct}`);
+      const res = await fetch(
+        `/api/dashboard?timeframe=${timeframe}&equity=${equity}&riskPct=${riskPct}&cryptoMode=${cryptoMode}&leverage=${cryptoLeverage}`
+      );
       const data = (await res.json()) as DashboardResponse & { error?: string };
       if (!res.ok || data.error) {
         throw new Error(data.error || 'Failed to load dashboard');
       }
       setDashboard(data);
+      if (!initializedCryptoCfg && data.config?.crypto_futures) {
+        setInitializedCryptoCfg(true);
+        setCryptoMode(data.config.crypto_futures.enabled_by_default ? 'futures' : 'spot');
+        setCryptoLeverage(data.config.crypto_futures.default_leverage ?? 3);
+        setMarginMode(data.config.crypto_futures.margin_mode ?? 'isolated');
+      }
       setError(null);
-      if (data.signals.length > 0 && !selectedSymbol) {
-        const firstActionable = data.signals.find((s) => s.direction !== 'avoid') ?? data.signals[0];
-        setSelectedSymbol(firstActionable.symbol);
+      if (data.signals.length > 0) {
+        setSelectedSymbol((prev) => {
+          if (prev && data.signals.some((s) => s.symbol === prev)) return prev;
+          const firstActionable = data.signals.find((s) => s.direction !== 'avoid') ?? data.signals[0];
+          return firstActionable.symbol;
+        });
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Unable to reach signal engine');
     } finally {
       setLoading(false);
     }
-  }, [equity, riskPct, selectedSymbol]);
+  }, [timeframe, equity, riskPct, cryptoMode, cryptoLeverage, initializedCryptoCfg]);
 
   useEffect(() => {
+    setLoading(true);
     fetchDashboard();
   }, [fetchDashboard]);
 
-  // Poll while initial market data bootstrap runs
+  // Poll while initial or newly-selected timeframe ingestion runs
   useEffect(() => {
     if (!dashboard?.bootstrapping) return;
     const timer = setInterval(() => {
@@ -73,7 +99,7 @@ export default function App() {
       const res = await fetch('/api/pipeline/run', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ rangeYears: 2 }),
+        body: JSON.stringify({ rangeYears: 2, timeframe }),
       });
       const data = await res.json();
       if (!res.ok || data.error) throw new Error(data.error || 'Pipeline run failed');
@@ -102,6 +128,7 @@ export default function App() {
   }, [dashboard?.signals, filteredSignals, selectedSymbol]);
 
   const maxPosPct = dashboard?.config.risk.max_position_pct ?? 15;
+  const freshness = dashboard?.freshness;
 
   return (
     <div className="min-h-screen flex flex-col bg-slate-50 text-slate-900 dark:bg-slate-950 dark:text-slate-100">
@@ -155,7 +182,9 @@ export default function App() {
               ) : (
                 <RefreshCw className="w-3.5 h-3.5" />
               )}
-              {runningPipeline || dashboard?.pipelineRunning ? 'Ingesting Market Data...' : 'Run Daily Pipeline'}
+              {runningPipeline || dashboard?.pipelineRunning
+                ? `Syncing ${timeframe.toUpperCase()}...`
+                : `Sync ${timeframe.toUpperCase()} Data`}
             </button>
           </div>
         </div>
@@ -186,15 +215,56 @@ export default function App() {
         ))}
       </div>
 
-      {/* Workspace Toolbar */}
+      {/* Workspace Toolbar: Timeframe, Currency Proof, Regime & Controls */}
       <div className="bg-white/60 dark:bg-slate-900/50 border-b border-slate-200 dark:border-slate-800">
         <div className="max-w-[1440px] mx-auto px-6 py-2.5 flex flex-wrap items-center justify-between gap-4 text-xs">
           <div className="flex flex-wrap items-center gap-3 text-slate-600 dark:text-slate-300">
-            {dashboard?.regime ? (
-              <>
-                <span className="font-medium text-slate-900 dark:text-slate-100">
-                  As of {dashboard.asOfDate}
+            {/* Analysis Timeframe Segmented Control */}
+            <div className="flex items-center gap-1 p-0.5 bg-slate-100 dark:bg-slate-800 rounded-md">
+              {TIMEFRAME_OPTIONS.map((opt) => (
+                <button
+                  key={opt.value}
+                  type="button"
+                  onClick={() => setTimeframe(opt.value)}
+                  className={`px-2.5 py-1 text-xs font-mono font-medium rounded transition-colors whitespace-nowrap ${
+                    timeframe === opt.value
+                      ? 'bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100 shadow-xs'
+                      : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200'
+                  }`}
+                >
+                  {opt.label}
+                </button>
+              ))}
+            </div>
+
+            {freshness && (
+              <button
+                type="button"
+                onClick={() => setShowFreshness(true)}
+                className="inline-flex items-center gap-1.5 text-left hover:underline whitespace-nowrap"
+              >
+                {freshness.status === 'Current' ? (
+                  <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400 shrink-0" />
+                ) : (
+                  <Clock className="w-3.5 h-3.5 text-amber-600 dark:text-amber-400 shrink-0" />
+                )}
+                <span
+                  className={
+                    freshness.status === 'Current'
+                      ? 'text-emerald-700 dark:text-emerald-400 font-medium'
+                      : 'text-amber-700 dark:text-amber-400 font-medium'
+                  }
+                >
+                  {freshness.status}
                 </span>
+                <span className="text-slate-500 dark:text-slate-400 font-mono tabular-nums">
+                  · Bar {freshness.latestBarOverall ?? dashboard?.asOfDate ?? '—'}
+                </span>
+              </button>
+            )}
+
+            {dashboard?.regime && (
+              <>
                 <span aria-hidden="true">·</span>
                 <span
                   className={
@@ -203,7 +273,7 @@ export default function App() {
                       : 'text-amber-700 dark:text-amber-400 font-medium'
                   }
                 >
-                  S&amp;P 500 {dashboard.regime.sp500Bullish ? 'above' : 'below'} 200DMA
+                  S&amp;P 500 {dashboard.regime.sp500Bullish ? 'above' : 'below'} MA
                 </span>
                 <span aria-hidden="true">·</span>
                 <span
@@ -213,23 +283,59 @@ export default function App() {
                       : 'text-amber-700 dark:text-amber-400 font-medium'
                   }
                 >
-                  BTC {dashboard.regime.btcBullish ? 'above' : 'below'} 200DMA
+                  BTC {dashboard.regime.btcBullish ? 'above' : 'below'} MA
                 </span>
-                {dashboard.lastRun && (
-                  <>
-                    <span aria-hidden="true">·</span>
-                    <span className="text-slate-500 dark:text-slate-400 font-mono tabular-nums">
-                      {dashboard.lastRun.assets_processed} assets synced
-                    </span>
-                  </>
-                )}
               </>
-            ) : (
-              <span>Preparing cross-asset market data...</span>
             )}
           </div>
 
           <div className="flex flex-wrap items-center gap-3">
+            {/* Crypto Spot vs Perpetual Futures Mode */}
+            <div className="inline-flex items-center gap-1.5">
+              <span className="text-slate-600 dark:text-slate-400">Crypto</span>
+              <div className="flex items-center gap-0.5 p-0.5 bg-slate-100 dark:bg-slate-800 rounded-md">
+                {(['spot', 'futures'] as const).map((mode) => (
+                  <button
+                    key={mode}
+                    type="button"
+                    onClick={() => setCryptoMode(mode)}
+                    className={`px-2 py-1 text-xs font-medium rounded capitalize transition-colors whitespace-nowrap ${
+                      cryptoMode === mode
+                        ? 'bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100 shadow-xs'
+                        : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200'
+                    }`}
+                  >
+                    {mode}
+                  </button>
+                ))}
+              </div>
+              {cryptoMode === 'futures' && (
+                <>
+                  <select
+                    aria-label="Crypto futures leverage"
+                    value={cryptoLeverage}
+                    onChange={(e) => setCryptoLeverage(Number(e.target.value))}
+                    className="px-2 py-1 rounded border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 font-mono tabular-nums text-slate-900 dark:text-slate-100"
+                  >
+                    {[2, 3, 5, 10, 20].map((lev) => (
+                      <option key={lev} value={lev}>
+                        {lev}×
+                      </option>
+                    ))}
+                  </select>
+                  <select
+                    aria-label="Crypto futures margin mode"
+                    value={marginMode}
+                    onChange={(e) => setMarginMode(e.target.value as MarginMode)}
+                    className="px-2 py-1 rounded border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 text-slate-900 dark:text-slate-100"
+                  >
+                    <option value="isolated">Isolated</option>
+                    <option value="cross">Cross</option>
+                  </select>
+                </>
+              )}
+            </div>
+
             <label className="inline-flex items-center gap-1.5 text-slate-600 dark:text-slate-400">
               <span>Equity $</span>
               <input
@@ -256,12 +362,21 @@ export default function App() {
 
             <button
               type="button"
+              onClick={() => setShowFreshness(true)}
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-800 whitespace-nowrap"
+            >
+              <Clock className="w-3.5 h-3.5" />
+              Verify Currency
+            </button>
+
+            <button
+              type="button"
               onClick={() => setShowDigest(true)}
               disabled={!dashboard?.digestText}
               className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-800 disabled:opacity-50 whitespace-nowrap"
             >
               <FileText className="w-3.5 h-3.5" />
-              Morning Digest
+              Digest
             </button>
 
             <button
@@ -271,7 +386,7 @@ export default function App() {
               className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-800 disabled:opacity-50 whitespace-nowrap"
             >
               <SlidersHorizontal className="w-3.5 h-3.5" />
-              Rules &amp; Universe
+              Rules
             </button>
 
             <button
@@ -298,10 +413,10 @@ export default function App() {
           <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-lg p-12 text-center space-y-3">
             <Loader2 className="w-6 h-6 animate-spin mx-auto text-blue-700 dark:text-blue-400" />
             <h1 className="text-base font-semibold font-display">
-              Ingesting Daily Market Data &amp; Computing Indicators
+              Ingesting {timeframe.toUpperCase()} Market Data &amp; Computing Indicators
             </h1>
             <p className="text-xs text-slate-500 dark:text-slate-400 max-w-md mx-auto">
-              Fetching 2 years of daily OHLCV bars across S&amp;P 500 equities, commodity futures, and crypto pairs, validating bars, and computing Wilder RSI, ATR, ADX, and relative strength.
+              Fetching live OHLCV candles across S&amp;P 500 equities, commodity futures, and crypto pairs for the {timeframe.toUpperCase()} timeframe, validating bars, and computing Wilder RSI, ATR, ADX, and relative strength.
             </p>
           </div>
         ) : activeTab === 'signals' ? (
@@ -312,10 +427,10 @@ export default function App() {
                 <div className="px-4 py-3 border-b border-slate-200 dark:border-slate-800 flex flex-wrap items-center justify-between gap-2">
                   <div>
                     <h1 className="text-sm font-semibold text-slate-900 dark:text-slate-100 font-display">
-                      Ranked Signal Slate
+                      Ranked Signal Slate ({timeframe.toUpperCase()})
                     </h1>
                     <p className="text-[11px] text-slate-500 dark:text-slate-400">
-                      Rule-based swing setups (R:R ≥ {dashboard?.config.risk.min_risk_reward ?? 1.5})
+                      Rule-based setups (R:R ≥ {dashboard?.config.risk.min_risk_reward ?? 1.5})
                     </p>
                   </div>
 
@@ -366,12 +481,16 @@ export default function App() {
                 {/* Ranked Rows */}
                 {filteredSignals.length === 0 ? (
                   <div className="p-8 text-center text-xs text-slate-500 dark:text-slate-400">
-                    No setups currently meet the conviction threshold under this filter. Switch to All Scored or adjust weights in Rules &amp; Universe.
+                    No setups currently meet the conviction threshold under this filter. Switch to All Scored or adjust weights in Rules.
                   </div>
                 ) : (
                   <div className="divide-y divide-slate-100 dark:divide-slate-800 max-h-[540px] overflow-y-auto">
                     {filteredSignals.map((sig) => {
                       const active = selectedSignal?.symbol === sig.symbol;
+                      const isPerp = sig.asset_class === 'crypto' && cryptoMode === 'futures';
+                      const displaySymbol = isPerp
+                        ? sig.cryptoFutures?.perpSymbol ?? `${sig.symbol.replace('-USD', '')}USDT`
+                        : sig.symbol;
                       return (
                         <button
                           key={sig.symbol}
@@ -386,7 +505,7 @@ export default function App() {
                           <div className="min-w-0">
                             <div className="flex items-center gap-2">
                               <span className="font-mono font-semibold text-sm text-slate-900 dark:text-slate-100">
-                                {sig.symbol}
+                                {displaySymbol}
                               </span>
                               <span
                                 className={`text-xs font-mono font-semibold uppercase ${
@@ -401,7 +520,11 @@ export default function App() {
                               </span>
                             </div>
                             <div className="mt-0.5 text-xs text-slate-500 dark:text-slate-400 truncate">
-                              {sig.name} · <span className="capitalize">{sig.asset_class}</span>
+                              {sig.name} ·{' '}
+                              {isPerp ? `${cryptoLeverage}× Perp` : <span className="capitalize">{sig.asset_class}</span>}
+                              {isPerp && sig.cryptoFutures
+                                ? ` · Fund ${sig.cryptoFutures.fundingRatePct >= 0 ? '+' : ''}${sig.cryptoFutures.fundingRatePct.toFixed(4)}%`
+                                : ''}
                             </div>
                           </div>
 
@@ -421,12 +544,12 @@ export default function App() {
                 )}
               </div>
 
-              {/* 60-Day Correlation Matrix */}
+              {/* 60-Bar Correlation Matrix */}
               {dashboard?.correlationMatrix && dashboard.correlationMatrix.symbols.length > 1 && (
                 <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-lg p-4 space-y-3">
                   <div>
                     <h3 className="text-xs font-semibold text-slate-900 dark:text-slate-100">
-                      60-Day Return Correlation Matrix (Top Picks)
+                      60-Bar Return Correlation Matrix ({timeframe.toUpperCase()} Top Picks)
                     </h3>
                     <p className="text-[11px] text-slate-500 dark:text-slate-400">
                       Diversification guard drops lower-scoring pairs exceeding 0.80 correlation.
@@ -478,9 +601,16 @@ export default function App() {
               {selectedSignal ? (
                 <SignalDetailPanel
                   signal={selectedSignal}
+                  timeframe={timeframe}
                   equity={equity}
                   riskPct={riskPct}
                   maxPositionPct={maxPosPct}
+                  cryptoMode={cryptoMode}
+                  cryptoLeverage={cryptoLeverage}
+                  marginMode={marginMode}
+                  onChangeCryptoMode={setCryptoMode}
+                  onChangeLeverage={setCryptoLeverage}
+                  onChangeMarginMode={setMarginMode}
                 />
               ) : (
                 <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-lg p-12 text-center text-sm text-slate-500">
@@ -490,7 +620,18 @@ export default function App() {
             </div>
           </div>
         ) : activeTab === 'scanner' ? (
-          <ScannerView equity={equity} riskPct={riskPct} maxPositionPct={maxPosPct} />
+          <ScannerView
+            timeframe={timeframe}
+            equity={equity}
+            riskPct={riskPct}
+            maxPositionPct={maxPosPct}
+            cryptoMode={cryptoMode}
+            cryptoLeverage={cryptoLeverage}
+            marginMode={marginMode}
+            onChangeCryptoMode={setCryptoMode}
+            onChangeLeverage={setCryptoLeverage}
+            onChangeMarginMode={setMarginMode}
+          />
         ) : activeTab === 'backtest' ? (
           <BacktestView />
         ) : (
@@ -505,7 +646,7 @@ export default function App() {
             Meridian Signal Desk · Decision-support research tool only, not financial advice. Signals can lose money.
           </span>
           <span>
-            Daily close ingestion via Yahoo Finance &amp; Binance public market data · Wilder RSI/ATR/ADX
+            Live {timeframe.toUpperCase()} ingestion via Yahoo Finance &amp; Binance public market data · Wilder RSI/ATR/ADX
           </span>
         </div>
       </footer>
@@ -513,6 +654,7 @@ export default function App() {
       {showConfig && dashboard?.config && (
         <ConfigDrawer
           config={dashboard.config}
+          timeframe={timeframe}
           onClose={() => setShowConfig(false)}
           onConfigSaved={fetchDashboard}
         />
@@ -520,6 +662,15 @@ export default function App() {
 
       {showDigest && dashboard?.digestText && (
         <DigestModal digestText={dashboard.digestText} onClose={() => setShowDigest(false)} />
+      )}
+
+      {showFreshness && (
+        <FreshnessModal
+          timeframe={timeframe}
+          onClose={() => setShowFreshness(false)}
+          onRefreshNow={handleRunPipeline}
+          refreshing={runningPipeline || Boolean(dashboard?.pipelineRunning)}
+        />
       )}
     </div>
   );

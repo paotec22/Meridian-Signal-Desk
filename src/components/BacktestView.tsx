@@ -13,7 +13,10 @@ export function BacktestView() {
   const [stopAtrMult, setStopAtrMult] = useState(2.0);
   const [targetRMultiple, setTargetRMultiple] = useState(2.0);
   const [timeStopDays, setTimeStopDays] = useState(15);
+  const [lookbackMonths, setLookbackMonths] = useState<number>(0);
   const [assetClassFilter, setAssetClassFilter] = useState<'all' | 'stock' | 'commodity' | 'crypto'>('all');
+  const [cryptoVenue, setCryptoVenue] = useState<'spot' | 'futures'>('spot');
+  const [cryptoLeverage, setCryptoLeverage] = useState<number>(3);
 
   useEffect(() => {
     fetch('/api/backtest/latest')
@@ -39,7 +42,10 @@ export function BacktestView() {
           stopAtrMult,
           targetRMultiple,
           timeStopDays,
+          lookbackMonths,
           assetClassFilter,
+          cryptoVenue,
+          cryptoLeverage,
         }),
       });
       const json = await res.json();
@@ -73,6 +79,19 @@ export function BacktestView() {
         onSubmit={handleRunBacktest}
         className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-lg p-5 flex flex-wrap items-end gap-4"
       >
+        <label className="text-xs space-y-1">
+          <span className="text-slate-500 dark:text-slate-400 block">Lookback Window</span>
+          <select
+            value={lookbackMonths}
+            onChange={(e) => setLookbackMonths(Number(e.target.value))}
+            className="px-3 py-1.5 rounded-md border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950"
+          >
+            <option value={0}>Full History (2Y)</option>
+            <option value={12}>Last 12 Months</option>
+            <option value={6}>Last 6 Months</option>
+            <option value={3}>Last 3 Months</option>
+          </select>
+        </label>
         <label className="text-xs space-y-1">
           <span className="text-slate-500 dark:text-slate-400 block">Min Score</span>
           <input
@@ -132,6 +151,32 @@ export function BacktestView() {
             <option value="crypto">Crypto</option>
           </select>
         </label>
+        <label className="text-xs space-y-1">
+          <span className="text-slate-500 dark:text-slate-400 block">Crypto Venue</span>
+          <select
+            value={cryptoVenue}
+            onChange={(e) => setCryptoVenue(e.target.value as 'spot' | 'futures')}
+            className="px-3 py-1.5 rounded-md border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950"
+          >
+            <option value="spot">Spot (1× · 15 bps)</option>
+            <option value="futures">Perp Futures (5 bps)</option>
+          </select>
+        </label>
+        {cryptoVenue === 'futures' && (
+          <label className="text-xs space-y-1">
+            <span className="text-slate-500 dark:text-slate-400 block">Crypto Leverage</span>
+            <select
+              value={cryptoLeverage}
+              onChange={(e) => setCryptoLeverage(Number(e.target.value))}
+              className="px-3 py-1.5 rounded-md border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 font-mono tabular-nums"
+            >
+              <option value={2}>2×</option>
+              <option value={3}>3×</option>
+              <option value={5}>5×</option>
+              <option value={10}>10×</option>
+            </select>
+          </label>
+        )}
 
         <button
           type="submit"

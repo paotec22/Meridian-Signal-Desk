@@ -7,10 +7,30 @@ const CONFIG_PATH = path.resolve(process.cwd(), 'config.yaml');
 
 let cachedConfig: AppConfig | null = null;
 
+const DEFAULT_CRYPTO_FUTURES: AppConfig['crypto_futures'] = {
+  enabled_by_default: false,
+  default_leverage: 3,
+  max_leverage: 20,
+  margin_mode: 'isolated',
+  taker_fee_bps: 5,
+  maintenance_margin_rate: 0.005,
+};
+
 export function loadConfig(): AppConfig {
   if (cachedConfig) return cachedConfig;
   const raw = fs.readFileSync(CONFIG_PATH, 'utf-8');
-  cachedConfig = YAML.parse(raw) as AppConfig;
+  const parsed = YAML.parse(raw) as AppConfig;
+  cachedConfig = {
+    ...parsed,
+    backtest: {
+      ...parsed.backtest,
+      crypto_futures_cost_bps: parsed.backtest?.crypto_futures_cost_bps ?? 5,
+    },
+    crypto_futures: {
+      ...DEFAULT_CRYPTO_FUTURES,
+      ...(parsed.crypto_futures ?? {}),
+    },
+  };
   return cachedConfig;
 }
 
@@ -24,6 +44,7 @@ export function updateConfig(partial: Partial<AppConfig>): AppConfig {
     scoring_thresholds: { ...current.scoring_thresholds, ...(partial.scoring_thresholds ?? {}) },
     risk: { ...current.risk, ...(partial.risk ?? {}) },
     backtest: { ...current.backtest, ...(partial.backtest ?? {}) },
+    crypto_futures: { ...current.crypto_futures, ...(partial.crypto_futures ?? {}) },
   };
   fs.writeFileSync(CONFIG_PATH, YAML.stringify(next), 'utf-8');
   cachedConfig = next;

@@ -2,8 +2,8 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { loadConfig } from '../src/engine/config.ts';
 import { computeAssetIndicators } from '../src/engine/indicators.ts';
-import { validateBars } from '../src/engine/ingestion.ts';
-import { computeRiskLevels, pearsonCorrelation } from '../src/engine/risk.ts';
+import { aggregate1hTo4h, validateBars } from '../src/engine/ingestion.ts';
+import { computeCryptoFuturesMetrics, computeRiskLevels, pearsonCorrelation } from '../src/engine/risk.ts';
 import { scoreAssetRow } from '../src/engine/signals.ts';
 import type { AssetRow, IndicatorRow, PriceBar, RegimeStatus } from '../src/engine/types.ts';
 import { isExcludedCryptoToken, normalizeYahooTicker } from '../src/engine/universe.ts';
@@ -39,6 +39,36 @@ test('Phase 3: OHLCV validator rejects invalid bars, duplicates, and flags >40% 
   assert.equal(res.validBars.length, 2);
   assert.equal(res.rejectedCount, 3);
   assert.equal(res.warnings.length >= 1, true);
+});
+
+test('Phase 3b: aggregate1hTo4h resamples hourly bars into 4h OHLCV buckets cleanly', () => {
+  const asset: AssetRow = {
+    id: 1,
+    symbol: 'BTC-USD',
+    name: 'Bitcoin',
+    asset_class: 'crypto',
+    sector: 'Crypto',
+    source: 'crypto',
+    active: 1,
+    added_at: '2026-01-01',
+  };
+  const raw1h: PriceBar[] = [
+    { asset_id: 1, date: '2026-11-16 00:00', open: 100, high: 102, low: 99, close: 101, adj_close: 101, volume: 10 },
+    { asset_id: 1, date: '2026-11-16 01:00', open: 101, high: 106, low: 100, close: 104, adj_close: 104, volume: 20 },
+    { asset_id: 1, date: '2026-11-16 03:00', open: 104, high: 105, low: 98, close: 103, adj_close: 103, volume: 15 },
+    { asset_id: 1, date: '2026-11-16 04:00', open: 103, high: 107, low: 102, close: 106, adj_close: 106, volume: 25 },
+  ];
+  const validated = validateBars(asset, raw1h, '1h');
+  assert.equal(validated.validBars.length, 4);
+  const bars4h = aggregate1hTo4h(validated.validBars);
+  assert.equal(bars4h.length, 2);
+  assert.equal(bars4h[0].date, '2026-11-16 00:00');
+  assert.equal(bars4h[0].open, 100);
+  assert.equal(bars4h[0].high, 106);
+  assert.equal(bars4h[0].low, 98);
+  assert.equal(bars4h[0].close, 103);
+  assert.equal(bars4h[0].volume, 45);
+  assert.equal(bars4h[1].date, '2026-11-16 04:00');
 });
 
 test('Phase 4: Indicator engine produces non-NaN SMA/RSI/ATR after warm-up period', () => {
@@ -134,4 +164,55 @@ test('Phase 6: Risk formula computes exact shares, stop-loss, and correlation', 
 
   const corr = pearsonCorrelation([0.01, 0.02, -0.01, 0.03, 0.01, -0.02, 0.04, 0.01, 0.02, -0.01], [0.01, 0.02, -0.01, 0.03, 0.01, -0.02, 0.04, 0.01, 0.02, -0.01]);
   assert.ok(Math.abs(corr - 1) < 1e-6);
+});
+
+test('Phase 6b: Crypto perpetual futures sizing computes isolated liquidation, safety guard, and funding carry', () => {
+  // Long BTC at 50000, stop 45000 (10% stop), equity 10000, risk 1% ($100), lev 5x, maxPos 15% ($1500 margin -> $7500 max notional)
+  // Risk-budget notional = (100 / 5000) * 50000 = $1000 -> initial margin $200, liq = 50000 * (1 - 0.2 + 0.005) = 40250 < stop 45000 (safe)
+  const safeLong = computeCryptoFuturesMetrics({
+    direction: 'long',
+    entryPrice: 50000,
+    stopLoss: 45000,
+    equity: 10000,
+    riskPct: 1,
+    maxPositionPct: 15,
+    leverage: 5,
+    marginMode: 'isolated',
+    fundingRate8h: 0.0001,
+  });
+  assert.equal(safeLong.notionalUsd, 1000);
+  assert.equal(safeLong.initialMarginUsd, 200);
+  assert.equal(safeLong.liquidationPrice, 40250);
+  assert.equal(safeLong.stopSafeBeforeLiq, true);
+  assert.ok(safeLong.dailyFundingUsd < 0); // Long pays positive funding
+
+  // Over-leveraged 20x: liq = 50000 * (1 - 0.05 + 0.005) = 47750 > stop 45000 -> unsafe!
+  const riskyLong = computeCryptoFuturesMetrics({
+    direction: 'long',
+    entryPrice: 50000,
+    stopLoss: 45000,
+    equity: 10000,
+    riskPct: 1,
+    maxPositionPct: 15,
+    leverage: 20,
+    marginMode: 'isolated',
+    fundingRate8h: 0.0001,
+  });
+  assert.equal(riskyLong.liquidationPrice, 47750);
+  assert.equal(riskyLong.stopSafeBeforeLiq, false);
+
+  // Short earns positive funding
+  const shortPerp = computeCryptoFuturesMetrics({
+    direction: 'short',
+    entryPrice: 50000,
+    stopLoss: 55000,
+    equity: 10000,
+    riskPct: 1,
+    maxPositionPct: 15,
+    leverage: 5,
+    marginMode: 'isolated',
+    fundingRate8h: 0.0001,
+  });
+  assert.ok(shortPerp.dailyFundingUsd > 0);
+  assert.equal(shortPerp.stopSafeBeforeLiq, true);
 });

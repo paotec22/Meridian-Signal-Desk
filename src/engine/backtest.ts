@@ -16,7 +16,10 @@ export interface BacktestParams {
   stopAtrMult?: number;
   targetRMultiple?: number;
   timeStopDays?: number;
+  lookbackMonths?: number;
   assetClassFilter?: 'all' | 'stock' | 'commodity' | 'crypto';
+  cryptoVenue?: 'spot' | 'futures';
+  cryptoLeverage?: number;
 }
 
 export interface BacktestOutput {
@@ -25,10 +28,12 @@ export interface BacktestOutput {
   trades: BacktestTrade[];
 }
 
-function getCostRate(assetClass: string, cfg: AppConfig): number {
+function getCostRate(assetClass: string, cfg: AppConfig, cryptoVenue: 'spot' | 'futures' = 'spot'): number {
   const bps =
     assetClass === 'crypto'
-      ? cfg.backtest.crypto_cost_bps
+      ? cryptoVenue === 'futures'
+        ? cfg.backtest.crypto_futures_cost_bps
+        : cfg.backtest.crypto_cost_bps
       : assetClass === 'commodity'
       ? cfg.backtest.commodity_cost_bps
       : cfg.backtest.stock_cost_bps;
@@ -46,7 +51,10 @@ function simulateTrades(
   stopAtrMult: number,
   targetRMultiple: number,
   timeStopDays: number,
-  shuffleSignalDates = false
+  shuffleSignalDates = false,
+  minStartDate?: string,
+  cryptoVenue: 'spot' | 'futures' = 'spot',
+  cryptoLeverage = 1
 ): BacktestTrade[] {
   const trades: BacktestTrade[] = [];
 
@@ -56,6 +64,10 @@ function simulateTrades(
 
     let i = 205;
     while (i < bars.length - 2) {
+      if (minStartDate && bars[i].date < minStartDate) {
+        i++;
+        continue;
+      }
       const signalIdx = shuffleSignalDates
         ? Math.min(bars.length - 3, Math.max(205, (i * 17 + 31) % (bars.length - 3)))
         : i;
@@ -100,13 +112,31 @@ function simulateTrades(
           ? entryPrice + targetRMultiple * stopDist
           : entryPrice - targetRMultiple * stopDist;
 
+      const isCryptoPerp = asset.asset_class === 'crypto' && cryptoVenue === 'futures';
+      const tradeLev = isCryptoPerp ? Math.max(1, Math.min(20, cryptoLeverage)) : 1;
+      const mmr = cfg.crypto_futures?.maintenance_margin_rate ?? 0.005;
+      const liqPrice =
+        isCryptoPerp && tradeLev > 1
+          ? direction === 'long'
+            ? entryPrice * (1 - 1 / tradeLev + mmr)
+            : entryPrice * (1 + 1 / tradeLev - mmr)
+          : null;
+
       let exitIdx = Math.min(bars.length - 1, entryBarIdx + timeStopDays - 1);
       let exitPrice = bars[exitIdx].close;
       let exitReason: 'target' | 'stop' | 'time' = 'time';
+      let liquidated = false;
 
       for (let k = entryBarIdx; k <= exitIdx; k++) {
         const c = bars[k];
         if (direction === 'long') {
+          if (liqPrice != null && c.low <= liqPrice) {
+            exitIdx = k;
+            exitPrice = liqPrice;
+            exitReason = 'stop';
+            liquidated = true;
+            break;
+          }
           // Conservative rule: if both stop and target hit in same bar, assume stop hit first
           if (c.low <= stopLoss) {
             exitIdx = k;
@@ -121,6 +151,13 @@ function simulateTrades(
             break;
           }
         } else {
+          if (liqPrice != null && c.high >= liqPrice) {
+            exitIdx = k;
+            exitPrice = liqPrice;
+            exitReason = 'stop';
+            liquidated = true;
+            break;
+          }
           if (c.high >= stopLoss) {
             exitIdx = k;
             exitPrice = stopLoss;
@@ -136,18 +173,19 @@ function simulateTrades(
         }
       }
 
-      const rawRet =
+      const rawRetUnlev =
         direction === 'long'
           ? (exitPrice - entryPrice) / entryPrice
           : (entryPrice - exitPrice) / entryPrice;
-      const costRate = getCostRate(asset.asset_class, cfg) * 2; // round trip entry + exit
-      const netRet = rawRet - costRate;
-      const riskPct = stopDist / entryPrice;
+      const costRateUnlev = getCostRate(asset.asset_class, cfg, cryptoVenue) * 2; // round trip entry + exit
+      const rawRet = liquidated ? -1 : Math.max(-1, rawRetUnlev * tradeLev);
+      const netRet = liquidated ? -1 : Math.max(-1, (rawRetUnlev - costRateUnlev) * tradeLev);
+      const riskPct = (stopDist / entryPrice) * tradeLev;
       const rMultiple = riskPct > 0 ? netRet / riskPct : 0;
       const isBullish = asset.asset_class === 'crypto' ? regime.btcBullish : regime.sp500Bullish;
 
       trades.push({
-        symbol: asset.symbol,
+        symbol: isCryptoPerp ? `${asset.symbol.replace('-USD', '')}USDT-PERP` : asset.symbol,
         asset_class: asset.asset_class,
         direction,
         signal_date: bar.date,
@@ -176,7 +214,8 @@ function simulateTrades(
 
 function buildEquityCurveAndMetrics(
   trades: BacktestTrade[],
-  spxBars: PriceBar[]
+  spxBars: PriceBar[],
+  minStartDate?: string
 ): {
   equityCurve: Array<{ date: string; strategyEquity: number; benchmarkEquity: number }>;
   totalReturnPct: number;
@@ -191,7 +230,9 @@ function buildEquityCurveAndMetrics(
   avgHoldingDays: number;
 } {
   // Portfolio simulation allocating 10% notional per trade (max 10 concurrent slots)
-  const sortedDates = spxBars.slice(205).map((b) => b.date);
+  const postWarmup = spxBars.slice(205);
+  const filteredSpx = minStartDate ? postWarmup.filter((b) => b.date >= minStartDate) : postWarmup;
+  const sortedDates = (filteredSpx.length >= 10 ? filteredSpx : postWarmup).map((b) => b.date);
   const tradesByExit = new Map<string, BacktestTrade[]>();
   for (const t of trades) {
     const arr = tradesByExit.get(t.exit_date) ?? [];
@@ -199,7 +240,7 @@ function buildEquityCurveAndMetrics(
     tradesByExit.set(t.exit_date, arr);
   }
 
-  const spxStart = spxBars[205]?.close ?? spxBars[0]?.close ?? 1;
+  const spxStart = (filteredSpx[0] ?? postWarmup[0] ?? spxBars[0])?.close ?? 1;
   const spxMap = new Map(spxBars.map((b) => [b.date, b.close]));
 
   let equity = 100;
@@ -279,7 +320,20 @@ export function runBacktest(params: BacktestParams = {}): BacktestOutput {
   const stopAtrMult = params.stopAtrMult ?? cfg.risk.stop_atr_multiplier;
   const targetRMultiple = params.targetRMultiple ?? cfg.risk.target_r_multiple;
   const timeStopDays = params.timeStopDays ?? cfg.risk.time_stop_days;
+  const lookbackMonths = params.lookbackMonths ?? 0;
   const assetClassFilter = params.assetClassFilter ?? 'all';
+  const cryptoVenue = params.cryptoVenue ?? 'spot';
+  const cryptoLeverage =
+    cryptoVenue === 'futures'
+      ? Math.max(1, Math.min(20, params.cryptoLeverage ?? cfg.crypto_futures.default_leverage))
+      : 1;
+
+  let minStartDate: string | undefined;
+  if (lookbackMonths > 0) {
+    const d = new Date();
+    d.setMonth(d.getMonth() - lookbackMonths);
+    minStartDate = d.toISOString().slice(0, 10);
+  }
 
   const allAssets = db
     .prepare("SELECT * FROM assets WHERE active = 1 AND asset_class != 'benchmark'")
@@ -339,10 +393,13 @@ export function runBacktest(params: BacktestParams = {}): BacktestOutput {
     stopAtrMult,
     targetRMultiple,
     timeStopDays,
-    false
+    false,
+    minStartDate,
+    cryptoVenue,
+    cryptoLeverage
   );
 
-  const metrics = buildEquityCurveAndMetrics(trades, spx.bars);
+  const metrics = buildEquityCurveAndMetrics(trades, spx.bars, minStartDate);
 
   // Split by asset class & regime
   const byAssetClass: Record<string, { trades: number; winRatePct: number; avgReturnPct: number }> = {};
@@ -435,9 +492,12 @@ export function runBacktest(params: BacktestParams = {}): BacktestOutput {
       spec.stop,
       targetRMultiple,
       timeStopDays,
-      false
+      false,
+      minStartDate,
+      cryptoVenue,
+      cryptoLeverage
     );
-    const subMetrics = buildEquityCurveAndMetrics(subTrades, spx.bars);
+    const subMetrics = buildEquityCurveAndMetrics(subTrades, spx.bars, minStartDate);
     return {
       label: spec.label,
       totalReturnPct: subMetrics.totalReturnPct,
@@ -458,9 +518,12 @@ export function runBacktest(params: BacktestParams = {}): BacktestOutput {
     stopAtrMult,
     targetRMultiple,
     timeStopDays,
-    true
+    true,
+    minStartDate,
+    cryptoVenue,
+    cryptoLeverage
   );
-  const shuffledMetrics = buildEquityCurveAndMetrics(shuffledTrades, spx.bars);
+  const shuffledMetrics = buildEquityCurveAndMetrics(shuffledTrades, spx.bars, minStartDate);
 
   const summary: BacktestSummary = {
     totalReturnPct: metrics.totalReturnPct,
@@ -489,7 +552,16 @@ export function runBacktest(params: BacktestParams = {}): BacktestOutput {
   db.prepare(
     'INSERT INTO backtest_runs (params_json, summary_json, equity_curve_json, trades_json) VALUES (?, ?, ?, ?)'
   ).run(
-    JSON.stringify({ scoreThreshold, stopAtrMult, targetRMultiple, timeStopDays, assetClassFilter }),
+    JSON.stringify({
+      scoreThreshold,
+      stopAtrMult,
+      targetRMultiple,
+      timeStopDays,
+      lookbackMonths,
+      assetClassFilter,
+      cryptoVenue,
+      cryptoLeverage,
+    }),
     JSON.stringify(summary),
     JSON.stringify(metrics.equityCurve),
     JSON.stringify(trades.slice(-150).reverse())

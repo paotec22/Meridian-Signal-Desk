@@ -5,7 +5,7 @@ import { ingestAssets } from './ingestion.ts';
 import { evaluateSignalOutcomes } from './outcomes.ts';
 import { generateDailySignals } from './signals.ts';
 import { getActiveAssets, syncUniverse } from './universe.ts';
-import type { PipelineRunRow } from './types.ts';
+import type { PipelineRunRow, Timeframe } from './types.ts';
 
 let pipelineRunning = false;
 
@@ -13,7 +13,10 @@ export function isPipelineRunning(): boolean {
   return pipelineRunning;
 }
 
-export async function runDailyPipeline(rangeYears = 2): Promise<PipelineRunRow> {
+export async function runDailyPipeline(
+  rangeYears = 2,
+  timeframe: Timeframe = '1d'
+): Promise<PipelineRunRow> {
   if (pipelineRunning) {
     throw new Error('Pipeline run is already in progress');
   }
@@ -29,10 +32,17 @@ export async function runDailyPipeline(rangeYears = 2): Promise<PipelineRunRow> 
   try {
     syncUniverse();
     const assets = getActiveAssets();
-    const ingestion = await ingestAssets(assets, rangeYears);
-    recomputeAllIndicators(assets);
-    const { signals } = generateDailySignals();
-    evaluateSignalOutcomes();
+    const ingestion = await ingestAssets(assets, rangeYears, timeframe);
+    if (timeframe === '1h' || timeframe === '4h') {
+      recomputeAllIndicators(assets, '1h');
+      recomputeAllIndicators(assets, '4h');
+    } else {
+      recomputeAllIndicators(assets, timeframe);
+    }
+    const { signals } = generateDailySignals(undefined, undefined, timeframe);
+    if (timeframe === '1d') {
+      evaluateSignalOutcomes();
+    }
 
     const failRate = assets.length > 0 ? ingestion.errors.length / assets.length : 0;
     const status =
@@ -70,11 +80,21 @@ export async function runDailyPipeline(rangeYears = 2): Promise<PipelineRunRow> 
   }
 }
 
-export async function ensureInitialDataReady(): Promise<void> {
+export function hasTimeframeData(timeframe: Timeframe): boolean {
   const db = getDb();
+  if (timeframe === '1d') {
+    const row = db.prepare('SELECT COUNT(*) as cnt FROM prices_daily').get() as { cnt: number };
+    return row.cnt > 0;
+  }
+  const row = db
+    .prepare('SELECT COUNT(*) as cnt FROM bars_tf WHERE timeframe = ?')
+    .get(timeframe) as { cnt: number };
+  return row.cnt > 0;
+}
+
+export async function ensureInitialDataReady(): Promise<void> {
   syncUniverse();
-  const barCount = db.prepare('SELECT COUNT(*) as cnt FROM prices_daily').get() as { cnt: number };
-  if (barCount.cnt === 0) {
-    await runDailyPipeline(2);
+  if (!hasTimeframeData('1d')) {
+    await runDailyPipeline(2, '1d');
   }
 }

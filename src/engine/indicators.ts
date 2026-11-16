@@ -1,5 +1,5 @@
-import { getDb, upsertIndicators } from './db.ts';
-import type { AssetRow, IndicatorRow, PriceBar } from './types.ts';
+import { getBarsForAsset, upsertIndicators } from './db.ts';
+import type { AssetRow, IndicatorRow, PriceBar, Timeframe } from './types.ts';
 
 function computeSma(values: number[], period: number): Array<number | null> {
   const out: Array<number | null> = new Array(values.length).fill(null);
@@ -253,15 +253,12 @@ export function computeAssetIndicators(
   return rows;
 }
 
-export function recomputeAllIndicators(assets: AssetRow[]): number {
-  const db = getDb();
+export function recomputeAllIndicators(assets: AssetRow[], timeframe: Timeframe = '1d'): number {
   const loadBars = (symbol: string): Map<string, number> => {
     const map = new Map<string, number>();
     const asset = assets.find((a) => a.symbol === symbol);
     if (!asset) return map;
-    const rows = db
-      .prepare('SELECT date, adj_close FROM prices_daily WHERE asset_id = ? ORDER BY date ASC')
-      .all(asset.id) as Array<{ date: string; adj_close: number }>;
+    const rows = getBarsForAsset(asset.id, timeframe, 'ASC');
     for (const r of rows) map.set(r.date, r.adj_close);
     return map;
   };
@@ -272,9 +269,7 @@ export function recomputeAllIndicators(assets: AssetRow[]): number {
 
   let totalUpdated = 0;
   for (const asset of assets) {
-    const bars = db
-      .prepare('SELECT * FROM prices_daily WHERE asset_id = ? ORDER BY date ASC')
-      .all(asset.id) as unknown as PriceBar[];
+    const bars = getBarsForAsset(asset.id, timeframe, 'ASC');
     if (bars.length === 0) continue;
 
     const benchMap =
@@ -285,7 +280,7 @@ export function recomputeAllIndicators(assets: AssetRow[]): number {
         : spxMap;
 
     const indRows = computeAssetIndicators(asset, bars, benchMap);
-    totalUpdated += upsertIndicators(indRows);
+    totalUpdated += upsertIndicators(indRows, timeframe);
   }
   return totalUpdated;
 }

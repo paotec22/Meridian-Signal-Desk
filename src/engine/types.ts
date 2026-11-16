@@ -1,8 +1,56 @@
 export type AssetClass = 'stock' | 'commodity' | 'crypto' | 'benchmark';
 
+export type Timeframe = '1h' | '4h' | '1d' | '1wk';
+
 export type SignalDirection = 'long' | 'short' | 'avoid';
 
 export type ExitReason = 'target' | 'stop' | 'time' | 'open';
+
+export type CryptoTradingMode = 'spot' | 'futures';
+
+export type MarginMode = 'isolated' | 'cross';
+
+export interface CryptoFuturesContractMeta {
+  perpSymbol: string;
+  markPrice: number;
+  indexPrice: number;
+  basisPct: number;
+  fundingRate: number;
+  fundingRatePct: number;
+  annualizedFundingPct: number;
+  nextFundingTime: string | null;
+  openInterestUnits: number | null;
+  openInterestUsd: number | null;
+  fetchedAt: string;
+}
+
+export interface AssetFreshnessRow {
+  asset_id: number;
+  symbol: string;
+  asset_class: AssetClass;
+  timeframe: Timeframe;
+  last_bar_time: string;
+  market_time: string | null;
+  fetched_at: string;
+  bar_count: number;
+}
+
+export interface FreshnessSummary {
+  timeframe: Timeframe;
+  status: 'Current' | 'Aging' | 'Stale';
+  statusReason: string;
+  lastFetchedAt: string | null;
+  latestBarOverall: string | null;
+  byClass: Record<
+    string,
+    {
+      assetsCount: number;
+      latestBarTime: string | null;
+      latestMarketTime: string | null;
+      lastFetchedAt: string | null;
+    }
+  >;
+}
 
 export interface AssetRow {
   id: number;
@@ -71,6 +119,7 @@ export interface SignalRecord {
   reasons: string[];
   regime: string;
   created_at?: string;
+  cryptoFutures?: CryptoFuturesContractMeta | null;
 }
 
 export interface SignalOutcomeRow {
@@ -159,8 +208,17 @@ export interface AppConfig {
     stock_cost_bps: number;
     commodity_cost_bps: number;
     crypto_cost_bps: number;
+    crypto_futures_cost_bps: number;
     walk_forward_train_days: number;
     walk_forward_test_days: number;
+  };
+  crypto_futures: {
+    enabled_by_default: boolean;
+    default_leverage: number;
+    max_leverage: number;
+    margin_mode: MarginMode;
+    taker_fee_bps: number;
+    maintenance_margin_rate: number;
   };
 }
 

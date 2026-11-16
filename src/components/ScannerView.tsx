@@ -1,17 +1,35 @@
 import { ArrowDown, ArrowUp, Search } from 'lucide-react';
 import { useEffect, useMemo, useState } from 'react';
-import type { ScannerRow, SignalRecord } from '../types';
+import type { CryptoTradingMode, MarginMode, ScannerRow, SignalRecord, Timeframe } from '../types';
 import { SignalDetailPanel } from './SignalDetailPanel';
 
 interface Props {
+  timeframe: Timeframe;
   equity: number;
   riskPct: number;
   maxPositionPct: number;
+  cryptoMode: CryptoTradingMode;
+  cryptoLeverage: number;
+  marginMode: MarginMode;
+  onChangeCryptoMode?: (mode: CryptoTradingMode) => void;
+  onChangeLeverage?: (lev: number) => void;
+  onChangeMarginMode?: (mode: MarginMode) => void;
 }
 
 type SortKey = 'score' | 'rsi_14' | 'adx_14' | 'ret_3m' | 'rel_strength' | 'vol_ratio_20' | 'symbol';
 
-export function ScannerView({ equity, riskPct, maxPositionPct }: Props) {
+export function ScannerView({
+  timeframe,
+  equity,
+  riskPct,
+  maxPositionPct,
+  cryptoMode,
+  cryptoLeverage,
+  marginMode,
+  onChangeCryptoMode,
+  onChangeLeverage,
+  onChangeMarginMode,
+}: Props) {
   const [rows, setRows] = useState<ScannerRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [query, setQuery] = useState('');
@@ -21,20 +39,34 @@ export function ScannerView({ equity, riskPct, maxPositionPct }: Props) {
   const [selected, setSelected] = useState<ScannerRow | null>(null);
 
   useEffect(() => {
-    fetch('/api/scanner')
+    setLoading(true);
+    fetch(`/api/scanner?timeframe=${timeframe}&cryptoMode=${cryptoMode}`)
       .then((r) => r.json())
       .then((data) => {
-        setRows(data.rows ?? []);
-        if (data.rows?.length > 0) setSelected(data.rows[0]);
+        const nextRows = (data.rows ?? []) as ScannerRow[];
+        setRows(nextRows);
+        setSelected((prev) => {
+          if (prev && nextRows.some((r) => r.symbol === prev.symbol)) {
+            return nextRows.find((r) => r.symbol === prev.symbol) ?? nextRows[0] ?? null;
+          }
+          return nextRows[0] ?? null;
+        });
       })
       .finally(() => setLoading(false));
-  }, []);
+  }, [timeframe, cryptoMode]);
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
     return rows
       .filter((r) => (classFilter === 'all' ? true : r.asset_class === classFilter))
-      .filter((r) => !q || r.symbol.toLowerCase().includes(q) || r.name.toLowerCase().includes(q) || r.sector.toLowerCase().includes(q))
+      .filter(
+        (r) =>
+          !q ||
+          r.symbol.toLowerCase().includes(q) ||
+          r.name.toLowerCase().includes(q) ||
+          r.sector.toLowerCase().includes(q) ||
+          (r.cryptoFutures?.perpSymbol.toLowerCase().includes(q) ?? false)
+      )
       .sort((a, b) => {
         if (sortKey === 'symbol') {
           return sortAsc ? a.symbol.localeCompare(b.symbol) : b.symbol.localeCompare(a.symbol);
@@ -74,6 +106,7 @@ export function ScannerView({ equity, riskPct, maxPositionPct }: Props) {
         position_pct: selected.position_pct,
         reasons: [`Long Score ${selected.long_score}/100 · Short Score ${selected.short_score}/100`],
         regime: '',
+        cryptoFutures: selected.cryptoFutures ?? null,
       }
     : null;
 
@@ -86,7 +119,7 @@ export function ScannerView({ equity, riskPct, maxPositionPct }: Props) {
             type="text"
             value={query}
             onChange={(e) => setQuery(e.target.value)}
-            placeholder="Filter ticker, name, or sector..."
+            placeholder="Filter ticker, perp, name, or sector..."
             className="w-full pl-9 pr-3 py-1.5 text-xs rounded-md border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 text-slate-900 dark:text-slate-100"
           />
         </div>
@@ -103,7 +136,7 @@ export function ScannerView({ equity, riskPct, maxPositionPct }: Props) {
                   : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200'
               }`}
             >
-              {cls === 'all' ? `All (${rows.length})` : cls}
+              {cls === 'all' ? `All (${rows.length})` : cls === 'crypto' && cryptoMode === 'futures' ? 'Crypto Perps' : cls}
             </button>
           ))}
         </div>
@@ -124,6 +157,9 @@ export function ScannerView({ equity, riskPct, maxPositionPct }: Props) {
                   </th>
                   <th className="px-4 py-2.5 font-medium">Class · Sector</th>
                   <th className="px-4 py-2.5 font-medium text-right">Close</th>
+                  {cryptoMode === 'futures' && (
+                    <th className="px-4 py-2.5 font-medium text-right">8h Fund</th>
+                  )}
                   <th className="px-4 py-2.5 font-medium text-right">
                     <button type="button" onClick={() => toggleSort('score')} className="inline-flex items-center gap-1">
                       Score {sortKey === 'score' && (sortAsc ? <ArrowUp className="w-3 h-3" /> : <ArrowDown className="w-3 h-3" />)}
@@ -161,6 +197,10 @@ export function ScannerView({ equity, riskPct, maxPositionPct }: Props) {
               <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
                 {filtered.map((r) => {
                   const isSel = selected?.symbol === r.symbol;
+                  const isPerp = r.asset_class === 'crypto' && cryptoMode === 'futures';
+                  const displaySymbol = isPerp
+                    ? r.cryptoFutures?.perpSymbol ?? `${r.symbol.replace('-USD', '')}USDT`
+                    : r.symbol;
                   return (
                     <tr
                       key={r.symbol}
@@ -172,8 +212,13 @@ export function ScannerView({ equity, riskPct, maxPositionPct }: Props) {
                       }`}
                     >
                       <td className="px-4 py-2.5">
-                        <div className="font-mono font-semibold text-slate-900 dark:text-slate-100">{r.symbol}</div>
-                        <div className="text-[11px] text-slate-500 truncate max-w-[140px]">{r.name}</div>
+                        <div className="font-mono font-semibold text-slate-900 dark:text-slate-100">
+                          {displaySymbol}
+                        </div>
+                        <div className="text-[11px] text-slate-500 truncate max-w-[150px]">
+                          {r.name}
+                          {isPerp ? ` · ${cryptoLeverage}× Perp` : ''}
+                        </div>
                       </td>
                       <td className="px-4 py-2.5 text-slate-600 dark:text-slate-400 capitalize whitespace-nowrap">
                         {r.asset_class} · {r.sector}
@@ -181,6 +226,13 @@ export function ScannerView({ equity, riskPct, maxPositionPct }: Props) {
                       <td className="px-4 py-2.5 text-right font-mono tabular-nums text-slate-900 dark:text-slate-100">
                         {r.close >= 100 ? r.close.toFixed(2) : r.close.toFixed(3)}
                       </td>
+                      {cryptoMode === 'futures' && (
+                        <td className="px-4 py-2.5 text-right font-mono tabular-nums text-slate-600 dark:text-slate-300">
+                          {r.cryptoFutures
+                            ? `${r.cryptoFutures.fundingRatePct >= 0 ? '+' : ''}${r.cryptoFutures.fundingRatePct.toFixed(4)}%`
+                            : '—'}
+                        </td>
+                      )}
                       <td className="px-4 py-2.5 text-right font-mono tabular-nums font-semibold text-slate-900 dark:text-slate-100">
                         {r.score}
                       </td>
@@ -235,9 +287,16 @@ export function ScannerView({ equity, riskPct, maxPositionPct }: Props) {
       {selectedAsSignal && (
         <SignalDetailPanel
           signal={selectedAsSignal}
+          timeframe={timeframe}
           equity={equity}
           riskPct={riskPct}
           maxPositionPct={maxPositionPct}
+          cryptoMode={cryptoMode}
+          cryptoLeverage={cryptoLeverage}
+          marginMode={marginMode}
+          onChangeCryptoMode={onChangeCryptoMode}
+          onChangeLeverage={onChangeLeverage}
+          onChangeMarginMode={onChangeMarginMode}
         />
       )}
     </div>
